@@ -18,7 +18,7 @@ echo "=========================================="
 echo ""
 
 # 1. Auto Compact threshold
-echo "[1/4] Configure Auto Compact Threshold"
+echo "[1/5] Configure Auto Compact Threshold"
 echo "  Default is 95%, recommended 50-70%"
 read -p "  Enter threshold (1-95, default 60): " threshold
 threshold="${threshold:-60}"
@@ -37,17 +37,17 @@ if [ -f "$SETTINGS_FILE" ]; then
     if grep -q '"env"' "$SETTINGS_FILE"; then
         if grep -q 'CLAUDE_AUTOCOMPACT_PCT_OVERRIDE' "$SETTINGS_FILE"; then
             # Replace existing value
-            sed -i.tmp "s/\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\": \"$threshold\"/" "$SETTINGS_FILE"
-            rm -f "${SETTINGS_FILE}.tmp"
+            TMP=$(mktemp)
+            sed "s/\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\": \"$threshold\"/" "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
         else
             # Add to existing env object
-            sed -i.tmp "s/\"env\"[[:space:]]*:[[:space:]]*{/\"env\": { \"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\": \"$threshold\",/" "$SETTINGS_FILE"
-            rm -f "${SETTINGS_FILE}.tmp"
+            TMP=$(mktemp)
+            sed "s/\"env\"[[:space:]]*:[[:space:]]*{/\"env\": { \"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\": \"$threshold\",/" "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
         fi
     else
         # Add env to root object
-        sed -i.tmp "s/{/{\"env\": {\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\": \"$threshold\"}, /" "$SETTINGS_FILE"
-        rm -f "${SETTINGS_FILE}.tmp"
+        TMP=$(mktemp)
+        sed "s/{/{\"env\": {\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\": \"$threshold\"}, /" "$SETTINGS_FILE" > "$TMP" && mv "$TMP" "$SETTINGS_FILE"
     fi
 else
     echo "{\"env\": {\"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE\": \"$threshold\"}}" > "$SETTINGS_FILE"

@@ -4,7 +4,10 @@ Recite-then-Solve helper for Context Optimizer skill.
 Reads core rules from CLAUDE.md hierarchy and outputs them for Claude to recite.
 Based on Du et al. (EMNLP 2025) - recitation refreshes model attention on instructions.
 
-Usage: python3 recite.py [--check-canary]
+Usage:
+    python3 recite.py                 # Extract and display rules
+    python3 recite.py --check-canary  # Also check canary health
+    python3 recite.py --help          # Show help
 """
 
 import os
@@ -27,7 +30,7 @@ def find_claude_mds():
     cwd = Path.cwd()
     for parent in [cwd] + list(cwd.parents):
         candidate = parent / "CLAUDE.md"
-        if candidate.exists():
+        if candidate.exists() and str(candidate) != str(home_claude):
             found.append(("project", str(candidate)))
         # Stop at home or root
         if parent == Path.home() or parent == Path("/"):
@@ -45,24 +48,25 @@ def extract_safety_rules(filepath):
 
     rules = []
 
-    # Look for safety-related lines
+    # Targeted patterns for actual safety rules (not arbitrary mentions)
     safety_patterns = [
-        r"(?i).*\bNEVER\b.*",
-        r"(?i).*\bALWAYS\b.*",
-        r"(?i).*\bsafety\b.*",
-        r"(?i).*\brm\b.*\brmdir\b.*",
-        r"(?i).*\btrash\b.*",
-        r"(?i).*\bconfirm\b.*\bbefore\b.*",
-        r"(?i).*\bGolden Rule\b.*",
+        r"^[-*]\s+NEVER\b",                  # "- NEVER use rm..."
+        r"^[-*]\s+ALWAYS\b",                 # "- ALWAYS move files..."
+        r"^[-*]\s+.*\bconfirm\w*\s+before\b",  # "- confirm before..."
+        r"^NEVER\b",                          # "NEVER use rm..." (no bullet)
+        r"^ALWAYS\b",                         # "ALWAYS move..." (no bullet)
+        r".*Golden Rule.*",                   # Special marker
+        r"^[-*]\s+.*\btrash\b.*\bmv\b",      # "- move to trash"
+        r"^[-*]\s+.*\bmv\b.*\btrash\b",      # "- mv file to trash"
     ]
 
     for line in content.split("\n"):
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith("#") or line.startswith("|"):
             continue
         for pattern in safety_patterns:
-            if re.match(pattern, line):
-                rules.append(line.lstrip("- "))
+            if re.match(pattern, line, re.IGNORECASE):
+                rules.append(line.lstrip("- *"))
                 break
 
     return rules
@@ -77,41 +81,59 @@ def extract_style_rules(filepath):
 
     rules = []
     style_patterns = [
-        r".*///.*",
-        r".*\[.*\].*每次.*",
-        r"(?i).*emoji.*",
-        r"(?i).*concise.*professional.*",
-        r"(?i).*Elon.*",
-        r".*先说.*",
+        r"^[-*]\s+.*每次回复.*先说",             # "每次回复先说：[•]"
+        r"^Every response must start with",     # Canary instruction
+        r"^[-*]\s+.*Every response.*start with",  # Bulleted canary
+        r"^[-*]\s+.*NO emoji",                  # "NO emojis except..."
+        r"^[-*]\s+.*Concise.*professional",     # "Concise, professional..."
+        r"^[-*]\s+Communication:",              # "Communication: ..."
     ]
 
     for line in content.split("\n"):
         line = line.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith("#") or line.startswith("|"):
             continue
         for pattern in style_patterns:
-            if re.match(pattern, line):
-                rules.append(line.lstrip("- "))
+            if re.match(pattern, line, re.IGNORECASE):
+                rules.append(line.lstrip("- *"))
                 break
 
     return rules
 
 
 def check_canary():
-    """Check if canary directory exists in workspace."""
-    cwd = Path.cwd()
-    # Look for canary directories
-    for parent in [cwd] + list(cwd.parents):
-        canary_dir = parent / "claude-context-canary"
-        if canary_dir.exists():
-            canary_files = list(canary_dir.glob("*"))
-            return True, [str(f.name) for f in canary_files]
-        if parent == Path.home() or parent == Path("/"):
-            break
-    return False, []
+    """Check actual canary health via state file and installed scripts."""
+    result = {
+        "installed": False,
+        "hook_installed": False,
+        "daemon_installed": False,
+        "state": None,
+    }
+
+    plugins_dir = Path.home() / ".claude" / "plugins"
+    state_file = Path.home() / ".claude" / "canary-state.json"
+
+    # Check installed components
+    result["hook_installed"] = (plugins_dir / "canary-check-v2.sh").exists()
+    result["daemon_installed"] = (plugins_dir / "canary-daemon-global.sh").exists()
+    result["installed"] = result["hook_installed"] or result["daemon_installed"]
+
+    # Check state
+    if state_file.exists():
+        try:
+            state = json.loads(state_file.read_text())
+            result["state"] = state
+        except Exception:
+            pass
+
+    return result
 
 
 def main():
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        sys.exit(0)
+
     check_canary_flag = "--check-canary" in sys.argv
 
     print("=" * 50)
@@ -132,7 +154,7 @@ def main():
         all_style.extend(style)
         print(f"[{level}] {filepath} -> {len(safety)} safety, {len(style)} style rules")
 
-    # Deduplicate
+    # Deduplicate preserving order
     all_safety = list(dict.fromkeys(all_safety))
     all_style = list(dict.fromkeys(all_style))
 
@@ -149,13 +171,27 @@ def main():
     if check_canary_flag:
         print()
         print("--- CANARY CHECK ---")
-        exists, files = check_canary()
-        if exists:
-            status = "ALIVE"
-            print(f"  Canary: {status} (files: {', '.join(files)})")
+        info = check_canary()
+        if info["installed"]:
+            components = []
+            if info["hook_installed"]:
+                components.append("hook")
+            if info["daemon_installed"]:
+                components.append("daemon")
+            print(f"  Installed: {', '.join(components)}")
+
+            if info["state"]:
+                fc = info["state"].get("failure_count", 0)
+                status = "HEALTHY" if fc == 0 else f"DEGRADED ({fc} failures)"
+                print(f"  Status: {status}")
+                if fc > 0:
+                    lf = info["state"].get("last_failure", "unknown")
+                    print(f"  Last failure: {lf}")
+            else:
+                print("  Status: NO DATA (no checks recorded yet)")
         else:
-            status = "NOT FOUND"
-            print(f"  Canary: {status} (no canary directory in workspace)")
+            print("  Canary: NOT INSTALLED")
+            print("  Install: bash install.sh --canary")
 
     print()
     print("--- ACTION ---")

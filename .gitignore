@@ -1,0 +1,14 @@
+# Runtime state
+canary-state.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+
+# Logs
+*.log

@@ -145,7 +145,14 @@ get_active_transcripts() {
 
 get_response_hash() {
     local transcript="$1"
-    tail -1 "$transcript" 2>/dev/null | md5sum 2>/dev/null | cut -d' ' -f1
+    if command -v md5sum &>/dev/null; then
+        tail -1 "$transcript" 2>/dev/null | md5sum | cut -d' ' -f1
+    elif command -v md5 &>/dev/null; then
+        tail -1 "$transcript" 2>/dev/null | md5 -q
+    else
+        # Fallback: use file mod time + size as change indicator
+        stat -c '%Y%s' "$transcript" 2>/dev/null || stat -f '%m%z' "$transcript" 2>/dev/null
+    fi
 }
 
 check_transcript() {
@@ -165,12 +172,13 @@ check_transcript() {
     while IFS= read -r line; do
         if echo "$line" | grep -q '"type"[[:space:]]*:[[:space:]]*"assistant"'; then
             # Extract first text field
-            local text=$(echo "$line" | sed 's/.*"text"[[:space:]]*:[[:space:]]*"//' | sed 's/".*//' | head -c 500)
-            if [ -n "$text" ] && [ "$text" != "$line" ]; then
+            # Handle escaped quotes, then extract text field
+            local text=$(echo "$line" | sed 's/\\"/_ESQ_/g' | sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"//p' | sed 's/".*//' | sed 's/_ESQ_/"/g' | head -c 500)
+            if [ -n "$text" ]; then
                 last_response="$text"
             fi
         fi
-    done < "$transcript"
+    done < <(tail -50 "$transcript")
 
     if [ -z "$last_response" ]; then
         return 0
@@ -243,7 +251,7 @@ watch_loop() {
 }
 
 start_daemon() {
-    if [ -f "$PID_FILE" ]; then
+    if [ -f "$PID_FILE" ] && [ -s "$PID_FILE" ]; then
         local old_pid=$(cat "$PID_FILE")
         if kill -0 "$old_pid" 2>/dev/null; then
             echo "Daemon already running (PID: $old_pid)"
@@ -261,7 +269,7 @@ start_daemon() {
 }
 
 stop_daemon() {
-    if [ ! -f "$PID_FILE" ]; then
+    if [ ! -f "$PID_FILE" ] || [ ! -s "$PID_FILE" ]; then
         echo "Daemon not running"
         return 1
     fi
@@ -269,12 +277,9 @@ stop_daemon() {
     local pid=$(cat "$PID_FILE")
     if kill -0 "$pid" 2>/dev/null; then
         kill "$pid"
-        rm -f "$PID_FILE"
-        echo "✓ Daemon stopped (PID: $pid)"
-    else
-        rm -f "$PID_FILE"
-        echo "Daemon not found, cleaned up PID file"
     fi
+    : > "$PID_FILE"  # Truncate PID file instead of deleting
+    echo "✓ Daemon stopped"
 }
 
 show_status() {

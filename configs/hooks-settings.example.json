@@ -1,11 +1,11 @@
 {
   "hooks": {
-    "Stop": [
+    "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/plugins/canary-check.sh",
+            "command": "~/.claude/plugins/canary-check-v2.sh",
             "timeout": 5
           }
         ]

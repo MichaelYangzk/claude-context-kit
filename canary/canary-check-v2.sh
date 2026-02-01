@@ -1,120 +1,128 @@
 #!/bin/bash
 #
-# Claude Context Canary v2 - Context Rot Detection Script
+# Claude Context Canary v2 - Context Rot Detection Hook (no jq dependency)
 #
-# Uses UserPromptSubmit hook - checks previous Claude response before user sends message
+# Triggered by UserPromptSubmit hook event.
+# Checks the last Claude response against a canary pattern.
+# If the pattern is missing, increments failure count and warns Claude.
 #
 
-# Config file paths
+# ─── Config ───
 CONFIG_FILE="${HOME}/.claude/canary-config.json"
 STATE_FILE="${HOME}/.claude/canary-state.json"
 
-# Default configuration
 DEFAULT_CANARY_PATTERN="^///"
 DEFAULT_FAILURE_THRESHOLD=2
 DEFAULT_AUTO_ACTION="warn"  # warn | block
 
-# Read stdin to get hook input
+# ─── Pure bash JSON helpers (no jq dependency) ───
+
+# Extract a JSON value from a string
+json_val() {
+    echo "$2" | grep -o "\"$1\"[[:space:]]*:[[:space:]]*[^,}]*" | \
+        sed 's/.*:[[:space:]]*//; s/"//g; s/[[:space:]]*$//' | head -1
+}
+
+# Extract a JSON value from a file
+json_val_file() {
+    grep -o "\"$1\"[[:space:]]*:[[:space:]]*[^,}]*" "$2" 2>/dev/null | \
+        sed 's/.*:[[:space:]]*//; s/"//g; s/[[:space:]]*$//' | head -1
+}
+
+# Escape a string for safe JSON embedding
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+# ─── Read hook input ───
+
 HOOK_INPUT=$(cat)
+TRANSCRIPT_PATH=$(json_val "transcript_path" "$HOOK_INPUT")
+SESSION_ID=$(json_val "session_id" "$HOOK_INPUT")
 
-# Parse hook input
-TRANSCRIPT_PATH=$(echo "$HOOK_INPUT" | jq -r '.transcript_path // empty')
-SESSION_ID=$(echo "$HOOK_INPUT" | jq -r '.session_id // empty')
-HOOK_EVENT=$(echo "$HOOK_INPUT" | jq -r '.hook_event_name // empty')
-
-# Debug log (optional)
-# echo "$(date): Hook triggered - $HOOK_EVENT" >> /tmp/canary-debug.log
-
-# If no transcript_path, exit directly
 if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
     exit 0
 fi
 
-# Read configuration
+# ─── Load config ───
+
 if [ -f "$CONFIG_FILE" ]; then
-    CANARY_PATTERN=$(jq -r '.canary_pattern // empty' "$CONFIG_FILE")
-    FAILURE_THRESHOLD=$(jq -r '.failure_threshold // empty' "$CONFIG_FILE")
-    AUTO_ACTION=$(jq -r '.auto_action // empty' "$CONFIG_FILE")
+    CANARY_PATTERN=$(json_val_file "canary_pattern" "$CONFIG_FILE")
+    FAILURE_THRESHOLD=$(json_val_file "failure_threshold" "$CONFIG_FILE")
+    AUTO_ACTION=$(json_val_file "auto_action" "$CONFIG_FILE")
 fi
 
 CANARY_PATTERN="${CANARY_PATTERN:-$DEFAULT_CANARY_PATTERN}"
 FAILURE_THRESHOLD="${FAILURE_THRESHOLD:-$DEFAULT_FAILURE_THRESHOLD}"
 AUTO_ACTION="${AUTO_ACTION:-$DEFAULT_AUTO_ACTION}"
 
-# Get Claude's last response
-# Search for the last assistant type message from transcript.jsonl
+# ─── Extract last assistant response ───
+# Read only the last 50 lines for performance
+
 LAST_RESPONSE=""
 while IFS= read -r line; do
-    MSG_TYPE=$(echo "$line" | jq -r '.type // empty' 2>/dev/null)
-    if [ "$MSG_TYPE" = "assistant" ]; then
-        # Extract text content (may have multiple content blocks)
-        TEXT_CONTENT=$(echo "$line" | jq -r '
-            .message.content[] |
-            select(.type == "text") |
-            .text
-        ' 2>/dev/null | head -1)
-        if [ -n "$TEXT_CONTENT" ]; then
-            LAST_RESPONSE="$TEXT_CONTENT"
+    if echo "$line" | grep -q '"type"[[:space:]]*:[[:space:]]*"assistant"'; then
+        # Handle escaped quotes in JSON text field
+        text=$(echo "$line" | \
+            sed 's/\\"/_ESQ_/g' | \
+            sed -n 's/.*"text"[[:space:]]*:[[:space:]]*"//p' | \
+            sed 's/".*//' | \
+            sed 's/_ESQ_/"/g' | \
+            head -c 500)
+        if [ -n "$text" ]; then
+            LAST_RESPONSE="$text"
         fi
     fi
-done < "$TRANSCRIPT_PATH"
+done < <(tail -50 "$TRANSCRIPT_PATH")
 
-# If no Claude response found (possibly new session), allow through
+# No response found (new session) -> allow through
 if [ -z "$LAST_RESPONSE" ]; then
     exit 0
 fi
 
-# Check if it matches canary instruction
-# Remove leading whitespace before checking
-TRIMMED_RESPONSE=$(echo "$LAST_RESPONSE" | sed 's/^[[:space:]]*//')
-if echo "$TRIMMED_RESPONSE" | grep -qE "$CANARY_PATTERN"; then
-    # Matches instruction, reset failure count
+# ─── Check canary pattern ───
+
+TRIMMED=$(echo "$LAST_RESPONSE" | sed 's/^[[:space:]]*//')
+if echo "$TRIMMED" | grep -qE "$CANARY_PATTERN"; then
+    # Canary alive - reset failure count
     if [ -f "$STATE_FILE" ]; then
-        jq '.failure_count = 0' "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+        echo '{"failure_count": 0}' > "$STATE_FILE"
     fi
     exit 0
 fi
 
-# Does not match instruction, record failure
+# ─── Canary failed - update state ───
+
 mkdir -p "$(dirname "$STATE_FILE")"
 
-if [ ! -f "$STATE_FILE" ]; then
-    echo '{"failure_count": 0, "last_failure": ""}' > "$STATE_FILE"
+CURRENT_COUNT=0
+if [ -f "$STATE_FILE" ]; then
+    CURRENT_COUNT=$(json_val_file "failure_count" "$STATE_FILE")
+    CURRENT_COUNT="${CURRENT_COUNT:-0}"
 fi
 
-CURRENT_COUNT=$(jq -r '.failure_count // 0' "$STATE_FILE")
 NEW_COUNT=$((CURRENT_COUNT + 1))
-TIMESTAMP=$(date -Iseconds)
+TIMESTAMP=$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S')
 
-jq --argjson count "$NEW_COUNT" --arg ts "$TIMESTAMP" \
-   '.failure_count = $count | .last_failure = $ts' "$STATE_FILE" > "${STATE_FILE}.tmp" \
-   && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+cat > "$STATE_FILE" << STATEEOF
+{"failure_count": ${NEW_COUNT}, "last_failure": "${TIMESTAMP}", "session_id": "${SESSION_ID}"}
+STATEEOF
 
-# Generate output
+# ─── Emit JSON response (properly escaped) ───
+
 if [ "$NEW_COUNT" -ge "$FAILURE_THRESHOLD" ]; then
-    # Critical warning
-    REASON="🚨 [Context Canary] Context rot detected! ${NEW_COUNT} consecutive failures to follow canary instruction. Run /compact or /clear"
-
+    REASON=$(json_escape "[Context Canary] Context rot detected! ${NEW_COUNT} consecutive failures. Run /compact or /clear")
     if [ "$AUTO_ACTION" = "block" ]; then
-        # Block user from sending more messages
-        cat << EOF
-{
-  "decision": "block",
-  "reason": "$REASON"
-}
-EOF
+        printf '{"decision":"block","reason":"%s"}\n' "$REASON"
         exit 0
     fi
 fi
 
-# Return warning context (will be shown to Claude)
-cat << EOF
-{
-  "decision": "allow",
-  "hookSpecificOutput": {
-    "hookEventName": "UserPromptSubmit",
-    "additionalContext": "⚠️ [Context Canary] Warning: Your previous response did not follow the canary instruction (should start with $CANARY_PATTERN). Consecutive failures: ${NEW_COUNT}/${FAILURE_THRESHOLD}. Please follow the instructions in CLAUDE.md."
-  }
-}
-EOF
+MSG=$(json_escape "[Context Canary] Warning: response did not match canary pattern (${CANARY_PATTERN}). Failures: ${NEW_COUNT}/${FAILURE_THRESHOLD}. Follow CLAUDE.md instructions.")
+printf '{"decision":"allow","hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"%s"}}\n' "$MSG"
 exit 0
