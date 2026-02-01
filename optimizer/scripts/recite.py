@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Recite-then-Solve helper for Context Optimizer skill.
-Reads core rules from CLAUDE.md hierarchy and outputs them for Claude to recite.
-Based on Du et al. (EMNLP 2025) - recitation refreshes model attention on instructions.
+Context health check helper for Context Optimizer skill.
+Reads core rules from CLAUDE.md hierarchy and checks canary health.
 
 Usage:
     python3 recite.py                 # Extract and display rules
@@ -137,7 +136,7 @@ def main():
     check_canary_flag = "--check-canary" in sys.argv
 
     print("=" * 50)
-    print("[RECITE-THEN-SOLVE] Context Health Recitation")
+    print("[CONTEXT CHECK] Rule Verification")
     print("=" * 50)
     print()
 
@@ -159,12 +158,12 @@ def main():
     all_style = list(dict.fromkeys(all_style))
 
     print()
-    print("--- SAFETY RULES (recite these) ---")
+    print("--- SAFETY RULES ---")
     for i, rule in enumerate(all_safety, 1):
         print(f"  {i}. {rule}")
 
     print()
-    print("--- STYLE RULES (recite these) ---")
+    print("--- STYLE RULES ---")
     for i, rule in enumerate(all_style, 1):
         print(f"  {i}. {rule}")
 
@@ -194,9 +193,6 @@ def main():
             print("  Install: bash install.sh --canary")
 
     print()
-    print("--- ACTION ---")
-    print("Claude: Please recite the above rules in your next response.")
-    print("This refreshes attention on critical instructions (Du et al. 2025).")
     print("=" * 50)
 
 

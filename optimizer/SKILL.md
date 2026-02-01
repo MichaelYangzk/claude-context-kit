@@ -1,11 +1,11 @@
 ---
 name: context-optimizer
-description: Context window 优化与防腐策略。在长会话、大文件处理、或 compact 后自动触发。当用户说 "optimize context"、"recite rules"、"/context-check" 时使用。也在每次 compact 后自动执行双端注入。
+description: Context window 优化与防腐策略。在长会话、大文件处理、或 compact 后自动触发。当用户说 "optimize context" 或 "/context-check" 时使用。
 ---
 
 # Context Optimizer Skill
 
-基于 Anthropic 工程博客、Chroma context-rot 研究、Du et al. (EMNLP 2025) Recite-then-Solve 论文的 5 项上下文优化策略。
+基于 Anthropic 工程博客、Chroma context-rot 研究的 4 项上下文优化策略。
 
 ---
 
@@ -58,32 +58,7 @@ description: Context window 优化与防腐策略。在长会话、大文件处�
 
 ---
 
-## Strategy 3: Recite-then-Solve (Du et al.)
-
-**原理:** 在执行关键操作前，先复述相关规则。强制刷新模型对指令的 attention，延缓上下文衰退。
-
-**触发时机:**
-- 上下文使用超过 40% 时（对话明显变长时）
-- 执行文件修改/删除操作前
-- 用户说 "recite rules" 或 `/recite` 时
-- 感觉自己开始忘记规则时
-
-**执行:**
-运行 `scripts/recite.py` 或手动复述:
-```
-[Context Health Check]
-1. Safety: 不用 rm/rmdir，用 mv ~/.Trash/
-2. Communication: 先说 ///，再说 [•]
-3. Style: No emojis except check/cross, Elon style
-4. Action: 直接做，少问多做
-5. Canary: [检查金丝雀是否还在上下文中]
-```
-
-**用户可手动触发:** `/recite` 或 "recite your rules"
-
----
-
-## Strategy 4: CLAUDE.md Re-Read (Compact 后规则恢复)
+## Strategy 3: CLAUDE.md Re-Read (Compact 后规则恢复)
 
 **原理:** Claude Code 在 compact 后会自动从磁盘重新读取所有层级的 CLAUDE.md 文件。安全规则和项目指令本身已内建在 compact 流程中。关键不是在回复里硬编码规则，而是确保 CLAUDE.md 被正确读取和遵守。
 
@@ -107,11 +82,9 @@ description: Context window 优化与防腐策略。在长会话、大文件处�
 - [你的关键行为规则]
 ```
 
-**降级方案:** 如果 canary 连续失败 → Strategy 3 (Recite) 会触发完整规则复述，这比硬编码更有效
-
 ---
 
-## Strategy 5: Index Refinement (已在实践)
+## Strategy 4: Index Refinement (已在实践)
 
 **原理:** Chroma 研究发现结构化长文的 context rot 比碎片化内容更严重。给 agent 的应该是指针和关键词，不是整理好的长篇文档。
 
@@ -129,9 +102,8 @@ description: Context window 优化与防腐策略。在长会话、大文件处�
 |------|----------|
 | 读取 > 30KB 文件（用户未要求全文） | Strategy 1 (Sub-Agent) |
 | 任何工具调用后（用户未要求完整输出） | Strategy 2 (Result Clearing) |
-| 对话超过 ~20 轮 | Strategy 3 (Recite) |
-| Compact 后指令遵从下降 | Strategy 4 (Re-Read CLAUDE.md) |
-| 浏览目录/文件 | Strategy 5 (Index Only) |
+| Compact 后指令遵从下降 | Strategy 3 (Re-Read CLAUDE.md) |
+| 浏览目录/文件 | Strategy 4 (Index Only) |
 
 ---
 
@@ -139,8 +111,7 @@ description: Context window 优化与防腐策略。在长会话、大文件处�
 
 | 命令 | 作用 |
 |------|------|
-| `/recite` | 触发 Strategy 3，复述所有核心规则 |
-| `/context-check` | 运行全部 5 项检查，报告上下文健康状态 |
+| `/context-check` | 运行全部 4 项检查，报告上下文健康状态 |
 | `optimize context` | 同 `/context-check` |
 
 ---
@@ -151,8 +122,7 @@ description: Context window 优化与防腐策略。在长会话、大文件处�
 [Context Health Report]
 1. Sub-Agent: [是否有大文件直接读入?] ✅/❌
 2. Result Clearing: [最近的工具结果是否已提炼?] ✅/❌
-3. Rule Recitation: [能否完整复述核心规则?] ✅/❌
-4. CLAUDE.md Loaded: [CLAUDE.md 规则是否已加载/遵守?] ✅/❌
-5. Index Hygiene: [上下文中是否有不必要的长文?] ✅/❌
+3. CLAUDE.md Loaded: [CLAUDE.md 规则是否已加载/遵守?] ✅/❌
+4. Index Hygiene: [上下文中是否有不必要的长文?] ✅/❌
 Canary: [金丝雀 token 是否还存在?] ✅/❌
 ```
